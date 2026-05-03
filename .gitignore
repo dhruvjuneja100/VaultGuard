@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+*.egg-info/
+
+# Environment variables (NEVER upload this — contains secrets)
+.env
+
+# Anaconda
+.conda/
+
+# VS Code
+.vscode/
+
+# Data (never upload real financial data)
+data/*.pdf
+data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
