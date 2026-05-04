@@ -11,3 +11,28 @@ KYC is the process of verifying a customer’s identity using official documents
 Document fraud means creating, editing, or using fake documents to deceive someone (usually for money, loans, or identity purposes).
 ## How big is loan fraud in India?
 India lost about ₹36,000+ crore in bank frauds in one year (FY 2024–25)
+
+
+## Who Are VaultGuard's Target Customers?
+
+### NBFCs (Primary Target)
+- Bajaj Finance, Capital Float, Lendingkart
+- Process thousands of loan applications daily
+- Cannot manually verify every statement
+- Need automated verification
+
+### Banks (Secondary Target)
+- HDFC, ICICI, Axis, Kotak
+- Have larger teams but even more applications
+- Compliance teams need audit trails
+
+### Big 4 Consulting (Tertiary Target)
+- Deloitte, EY, KPMG, PwC
+- They build fraud detection systems FOR banks
+- Would buy/integrate a solution like VaultGuard
+
+## The Problem in Numbers
+- India lost ₹36,000+ crore in bank frauds (FY 2024-25)
+- 70% of loan fraud involves document manipulation
+- Average loan officer reviews 50+ statements per day
+- Manual review misses subtle statistical anomalies
