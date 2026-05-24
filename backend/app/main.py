@@ -1,57 +1,82 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from pathlib import Path
+from datetime import timedelta
+from dotenv import load_dotenv
+from backend.app.auth import (
+    authenticate_user,
+    create_access_token,
+    get_current_user,
+    Token,
+    User,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from backend.app.pdf_forensics import analyze_full_statement
 import pickle
 import pandas as pd
 import numpy as np
-from pathlib import Path
+import tempfile
+import os
 
 # =============================================
 # VAULTGUARD — FastAPI Backend
-# Serves the fraud detection ML model via API
 # =============================================
 
-#initialize FastAPI app
+# Load environment variables
+load_dotenv()
+
+# Initialize FastAPI app
 app = FastAPI(
     title="VaultGuard API",
     description="AI-powered bank statement fraud detection",
-    version = "1.0.0"
+    version="1.0.0"
+)
+
+# =============================================
+# RATE LIMITING
+# =============================================
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded,
+    _rate_limit_exceeded_handler
 )
 
 # =============================================
 # CORS MIDDLEWARE
-# Allows React frontend to talk to this API
-# Without this, browser blocks all requests
 # =============================================
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://localhost:3000"],
-    allow_credentials = True,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 # =============================================
-# LOAD ML MODEL ON STARTUP
-# Model loads once when server starts
-# Not on every request — that would be slow
+# LOAD ML MODEL
 # =============================================
+MODEL_PATH = Path(__file__).parent.parent.parent / "ml" / "fraud_model.pkl"
 
-MODEL_PATH = Path(__file__).parent.parent.parent / "ml"/ "fraud_model.pkl"
-
-#Load teh trainded model
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
-print(f"Model Loaded from {MODEL_PATH}")
+
+print(f"✅ Model loaded from {MODEL_PATH}")
+
 # =============================================
-# REQUEST/RESPONSE MODELS
-# Pydantic validates incoming data automatically
-# If data is wrong type, FastAPI returns error
+# PYDANTIC MODELS
 # =============================================
+
 class StatementFeatures(BaseModel):
-    """Features extracted from a bank statment.
-    these match exactly what our model expects"""
+    """Features extracted from a bank statement"""
     round_number_ratio:      float
     salary_is_round:         int
     salary_variance:         float
@@ -63,46 +88,102 @@ class StatementFeatures(BaseModel):
     large_transaction_ratio: float
     credit_debit_ratio:      float
 
+
 class FraudAnalysisResponse(BaseModel):
     """Response returned to the frontend"""
-    risk_score:      float   # 0-100
-    verdict:         str     # HIGH/MEDIUM/LOW RISK
-    is_fraud:        bool    # True or False
-    confidence:      float   # Model confidence %
-    flags:           list    # List of fraud signals found
+    risk_score:  float
+    verdict:     str
+    is_fraud:    bool
+    confidence:  float
+    flags:       list
+
+
 # =============================================
-# ROUTES (API Endpoints)
+# ROUTES
 # =============================================
 
 @app.get("/")
 def root():
-    """Welcome endpoint — confirms API is running"""
     return {
         "message": "Welcome to VaultGuard API",
         "version": "1.0.0",
         "status":  "running"
     }
+
+
 @app.get("/health")
 def health_check():
-    """Health check — used by deployment platforms"""
     return {
         "status":       "healthy",
         "model_loaded": model is not None
     }
+
+
+@app.post("/token", response_model=Token)
+@limiter.limit("5/minute")
+async def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends()
+):
+    """Login — returns JWT token"""
+    try:
+        print(f"Login attempt: {form_data.username}")
+
+        user = authenticate_user(
+            form_data.username,
+            form_data.password
+        )
+        print(f"Auth result: {user}")
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        access_token = create_access_token(
+            data={"sub": form_data.username},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+
+        return Token(
+            access_token=access_token,
+            token_type="bearer"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Login error: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Login error: {str(e)}"
+        )
+
+
+@app.get("/me")
+async def get_current_user_info(
+    current_user: User = Depends(get_current_user)
+):
+    """Returns current logged in user info"""
+    return {
+        "username": current_user.username,
+        "message":  "You are authenticated!"
+    }
+
+
 @app.post("/analyze", response_model=FraudAnalysisResponse)
-def analyze_statement(features: StatementFeatures):
-    """
-    Main endpoint — analyzes bank statement features
-    and returns fraud risk score.
+@limiter.limit("10/minute")
+async def analyze_statement(
+    request: Request,
+    features: StatementFeatures,
+    current_user: User = Depends(get_current_user)
+):
+    """Analyze bank statement features for fraud"""
 
-    Accepts: StatementFeatures (JSON)
-    Returns: FraudAnalysisResponse (JSON)
-    """
-
-    # Convert incoming data to DataFrame
-    # Model expects a DataFrame, not a Pydantic object
     input_data = pd.DataFrame([{
-         "round_number_ratio":      features.round_number_ratio,
+        "round_number_ratio":      features.round_number_ratio,
         "salary_is_round":         features.salary_is_round,
         "salary_variance":         features.salary_variance,
         "min_balance":             features.min_balance,
@@ -113,15 +194,11 @@ def analyze_statement(features: StatementFeatures):
         "large_transaction_ratio": features.large_transaction_ratio,
         "credit_debit_ratio":      features.credit_debit_ratio
     }])
-    # Get fraud probability from model
-    # predict_proba returns [[legit_prob, fraud_prob]]
-    probabilities = model.predict_proba(input_data)[0]
+
+    probabilities     = model.predict_proba(input_data)[0]
     fraud_probability = probabilities[1]
+    risk_score        = round(fraud_probability * 100, 1)
 
-    # Calculate risk score (0-100)
-    risk_score = round(fraud_probability * 100, 1)
-
-    # Determine verdict
     if risk_score >= 70:
         verdict = "HIGH RISK"
     elif risk_score >= 40:
@@ -129,7 +206,6 @@ def analyze_statement(features: StatementFeatures):
     else:
         verdict = "LOW RISK"
 
-    # Detect specific fraud flags
     flags = []
     if features.round_number_ratio > 0.5:
         flags.append("High round number ratio in transactions")
@@ -145,67 +221,65 @@ def analyze_statement(features: StatementFeatures):
     return FraudAnalysisResponse(
         risk_score=risk_score,
         verdict=verdict,
-        is_fraud=fraud_probability >= 0.5,
-        confidence=round(max(probabilities) * 100, 1),
+        is_fraud=bool(fraud_probability >= 0.5),
+        confidence=round(float(max(probabilities) * 100), 1),
         flags=flags
     )
-from fastapi import UploadFile, File, HTTPException
-import tempfile
-import os
-from backend.app.pdf_forensics import analyze_full_statement
+
 
 @app.post("/analyze-pdf")
-async def analyze_pdf(file: UploadFile = File(...)):
-    """
-    New endpoint — accepts PDF upload and runs
-    full forensics + ML analysis on it.
-    
-    UploadFile = FastAPI's file upload handler
-    File(...)  = required file field
-    async      = handles file I/O asynchronously
-    """
+@limiter.limit("10/minute")
+async def analyze_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Accept PDF upload and run full forensics + ML analysis"""
 
     # Validate file type
-    # Only accept PDF files
     if not file.filename.endswith('.pdf'):
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are accepted"
         )
 
-    # Save uploaded file temporarily
-    # We need a real file path for PyMuPDF
-    # tempfile creates a temporary file that
-    # auto-deletes when we're done
+    # Save to temp file
     with tempfile.NamedTemporaryFile(
         delete=False,
         suffix='.pdf'
     ) as tmp_file:
-        # Read uploaded file contents
         contents = await file.read()
-        # Write to temporary file
+
+        # Validate file size
+        if len(contents) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="File too large — max 10MB"
+            )
+
         tmp_file.write(contents)
         tmp_path = tmp_file.name
-        # tmp_path = something like C:/Temp/tmpXXXX.pdf
 
     try:
-        # Run full forensics analysis
         analysis = analyze_full_statement(tmp_path)
 
-        # Get features and run ML model
+        # Validate transactions found
+        if analysis["transaction_count"] < 5:
+            raise HTTPException(
+                status_code=400,
+                detail="Not enough transactions found — please upload a valid bank statement"
+            )
+
         features    = analysis["features"]
         features_df = pd.DataFrame([features])
 
-        # Get fraud probability
         probabilities     = model.predict_proba(features_df)[0]
         fraud_probability = probabilities[1]
         risk_score        = round(fraud_probability * 100, 1)
 
-        # Combine with forensics risk
         forensics_risk = analysis["forensics_risk"]
         combined_score = min(100, risk_score + (forensics_risk * 0.3))
 
-        # Determine verdict
         if combined_score >= 70:
             verdict = "HIGH RISK"
         elif combined_score >= 40:
@@ -213,7 +287,6 @@ async def analyze_pdf(file: UploadFile = File(...)):
         else:
             verdict = "LOW RISK"
 
-        # Build flags list
         flags = analysis["forensics_findings"].copy()
         if features["round_number_ratio"] > 0.5:
             flags.append("High round number ratio")
@@ -225,20 +298,17 @@ async def analyze_pdf(file: UploadFile = File(...)):
             flags.append("Minimum balance artificially high")
 
         return {
-            "filename":        file.filename,
-            "risk_score":      round(combined_score, 1),
-            "ml_score":        risk_score,
-            "forensics_score": forensics_risk,
-            "verdict":         verdict,
-            "is_fraud": bool(combined_score >= 70),
-            "confidence":      round(max(probabilities) * 100, 1),
-            "flags":           flags,
+            "filename":           file.filename,
+            "risk_score":         round(float(combined_score), 1),
+            "ml_score":           float(risk_score),
+            "forensics_score":    int(forensics_risk),
+            "verdict":            verdict,
+            "is_fraud":           bool(combined_score >= 70),
+            "confidence":         round(float(max(probabilities) * 100), 1),
+            "flags":              flags,
             "transactions_found": analysis["transaction_count"],
-            "fonts_detected":  analysis["fonts"]["fonts_detected"]
+            "fonts_detected":     analysis["fonts"]["fonts_detected"]
         }
 
     finally:
-        # Always delete temporary file
-        # finally block runs even if error occurs
         os.unlink(tmp_path)
-        # os.unlink deletes a file
