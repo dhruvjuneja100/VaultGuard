@@ -3,88 +3,97 @@ import axios from "axios"
 
 // =============================================
 // VAULTGUARD — Main App Component
-// Manages the entire application state
-// and renders the correct screen
 // =============================================
 
-// API base URL — points to our FastAPI backend
 const API_URL = "http://127.0.0.1:8000"
 
 export default function App() {
 
-  // ── State Variables ──
-  // State = data that when changed, re-renders UI
-  // Think of state like variables that React watches
+  const [screen, setScreen]         = useState("login")
+  const [token, setToken]           = useState(null)
+  const [loginError, setLoginError] = useState(null)
+  const [file, setFile]             = useState(null)
+  const [results, setResults]       = useState(null)
+  const [error, setError]           = useState(null)
 
-  const [screen, setScreen] = useState("upload")
-  // screen controls which UI is shown:
-  // "upload"   → file upload screen
-  // "loading"  → analyzing animation
-  // "results"  → fraud analysis results
+  // ── Login Handler ──
+  async function handleLogin(username, password) {
+    try {
+      const response = await axios.post(
+        `${API_URL}/token`,
+        new URLSearchParams({
+          username: username,
+          password: password
+        })
+      )
+      setToken(response.data.access_token)
+      setScreen("upload")
+      setLoginError(null)
+    } catch (err) {
+      setLoginError(
+        err.response?.data?.detail ||
+        "Login failed. Please try again."
+      )
+    }
+  }
 
-  const [file, setFile] = useState(null)
-  // file = the PDF file user selected
-
-  const [results, setResults] = useState(null)
-  // results = response from FastAPI after analysis
-
-  const [error, setError] = useState(null)
-  // error = any error message to show user
-
-  // ── Handle File Selection ──
-  // Called when user picks a file
+  // ── File Selection Handler ──
   function handleFileChange(event) {
     const selectedFile = event.target.files[0]
 
-    // Validate file type
     if (selectedFile && !selectedFile.name.endsWith('.pdf')) {
       setError("Please upload a PDF file only")
       setFile(null)
       return
     }
 
+    const fileSizeKB = selectedFile.size / 1024
+    if (fileSizeKB < 10) {
+      setError("File too small — please upload a real bank statement")
+      setFile(null)
+      return
+    }
+
+   
+    if (fileSizeKB < 1) {
+    setError("File too small — please upload a real bank statement")
+    setFile(null)
+    return
+}
+
     setFile(selectedFile)
-    setError(null)  // Clear any previous error
+    setError(null)
   }
 
-  // ── Handle Form Submit ──
-  // Called when user clicks "Analyze" button
+  // ── Analyze Handler ──
   async function handleSubmit() {
-
-    // Check file is selected
     if (!file) {
       setError("Please select a PDF file first")
       return
     }
 
-    // Show loading screen
     setScreen("loading")
     setError(null)
 
     try {
-      // Create FormData — required for file uploads
-      // Like HTML form but in JavaScript
       const formData = new FormData()
       formData.append("file", file)
-      // "file" must match FastAPI parameter name
 
-      // Send POST request to FastAPI
       const response = await axios.post(
         `${API_URL}/analyze-pdf`,
         formData,
         {
           headers: {
-            "Content-Type": "multipart/form-data"
+            "Content-Type":  "multipart/form-data",
+            "Authorization": `Bearer ${token}`
           }
         }
       )
 
-      // Store results and show results screen
       setResults(response.data)
       setScreen("results")
 
     } catch (err) {
-      // Handle errors gracefully
       setError(
         err.response?.data?.detail ||
         "Something went wrong. Please try again."
@@ -93,8 +102,7 @@ export default function App() {
     }
   }
 
-  // ── Handle Reset ──
-  // Called when user clicks "Analyze Another"
+  // ── Reset Handler ──
   function handleReset() {
     setFile(null)
     setResults(null)
@@ -102,15 +110,31 @@ export default function App() {
     setScreen("upload")
   }
 
-  // ── Render Correct Screen ──
+  // ── Logout Handler ──
+  function handleLogout() {
+    setToken(null)
+    setFile(null)
+    setResults(null)
+    setError(null)
+    setLoginError(null)
+    setScreen("login")
+  }
+
   return (
     <div style={styles.app}>
+      <Header
+        isLoggedIn={token !== null}
+        onLogout={handleLogout}
+      />
 
-      {/* Header — always visible */}
-      <Header />
+      {screen === "login" && (
+        <LoginScreen
+          onLogin={handleLogin}
+          error={loginError}
+        />
+      )}
 
-      {/* Main content — changes based on screen */}
-      {screen === "upload"  && (
+      {screen === "upload" && (
         <UploadScreen
           file={file}
           error={error}
@@ -127,24 +151,33 @@ export default function App() {
           onReset={handleReset}
         />
       )}
-
     </div>
   )
 }
 
 // =============================================
-// HEADER COMPONENT
+// HEADER
 // =============================================
 
-function Header() {
+function Header({ isLoggedIn, onLogout }) {
   return (
     <header style={styles.header}>
       <div style={styles.headerContent}>
         <div style={styles.logo}>
           🔐 VaultGuard
         </div>
-        <div style={styles.tagline}>
-          AI-Powered Bank Statement Forensics
+        <div style={styles.headerRight}>
+          <div style={styles.tagline}>
+            AI-Powered Bank Statement Forensics
+          </div>
+          {isLoggedIn && (
+            <button
+              onClick={onLogout}
+              style={styles.logoutButton}
+            >
+              Logout
+            </button>
+          )}
         </div>
       </div>
     </header>
@@ -152,7 +185,91 @@ function Header() {
 }
 
 // =============================================
-// UPLOAD SCREEN COMPONENT
+// LOGIN SCREEN
+// =============================================
+
+function LoginScreen({ onLogin, error }) {
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+  const [loading, setLoading]   = useState(false)
+
+  async function handleSubmit() {
+    if (!username || !password) return
+    setLoading(true)
+    await onLogin(username, password)
+    setLoading(false)
+  }
+
+  return (
+    <main style={styles.main}>
+      <div style={styles.uploadCard}>
+
+        <div style={styles.loginIcon}>🔐</div>
+
+        <h1 style={styles.title}>
+          Welcome to VaultGuard
+        </h1>
+        <p style={styles.subtitle}>
+          Sign in to access the AI fraud detection system
+        </p>
+
+        <div style={styles.inputGroup}>
+          <label style={styles.label}>Username</label>
+          <input
+            type="text"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            style={styles.input}
+            placeholder="Enter username"
+          />
+        </div>
+
+        <div style={styles.inputGroup}>
+          <label style={styles.label}>Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            style={styles.input}
+            placeholder="Enter password"
+            onKeyDown={e => e.key === "Enter" && handleSubmit()}
+          />
+        </div>
+
+        {error && (
+          <div style={styles.errorBox}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          style={{
+            ...styles.analyzeButton,
+            opacity: loading ? 0.7 : 1
+          }}
+          disabled={loading}
+        >
+          {loading ? "Signing in..." : "🔑 Sign In"}
+        </button>
+
+        <div style={styles.demoCredentials}>
+          <p style={styles.demoTitle}>Demo Credentials</p>
+          <p style={styles.demoText}>
+            Username: <strong style={styles.demoValue}>admin</strong>
+          </p>
+          <p style={styles.demoText}>
+            Password: <strong style={styles.demoValue}>vaultguard123</strong>
+          </p>
+        </div>
+
+      </div>
+    </main>
+  )
+}
+
+// =============================================
+// UPLOAD SCREEN
 // =============================================
 
 function UploadScreen({ file, error, onFileChange, onSubmit }) {
@@ -160,23 +277,20 @@ function UploadScreen({ file, error, onFileChange, onSubmit }) {
     <main style={styles.main}>
       <div style={styles.uploadCard}>
 
-        {/* Title */}
         <h1 style={styles.title}>
           Detect Loan Fraud Instantly
         </h1>
         <p style={styles.subtitle}>
-          Upload a bank statement PDF and our AI will analyze it
-          for signs of tampering and fraud in seconds.
+          Upload a bank statement PDF and our AI will analyze
+          it for signs of tampering and fraud in seconds.
         </p>
 
-        {/* Upload Area */}
         <div style={styles.uploadArea}>
           <div style={styles.uploadIcon}>📄</div>
           <p style={styles.uploadText}>
             {file ? `✅ ${file.name}` : "Drop your PDF here or click to browse"}
           </p>
 
-          {/* Hidden file input */}
           <input
             type="file"
             accept=".pdf"
@@ -185,7 +299,6 @@ function UploadScreen({ file, error, onFileChange, onSubmit }) {
             id="fileInput"
           />
 
-          {/* Custom styled button that triggers input */}
           <label
             htmlFor="fileInput"
             style={styles.browseButton}
@@ -194,14 +307,12 @@ function UploadScreen({ file, error, onFileChange, onSubmit }) {
           </label>
         </div>
 
-        {/* Error message */}
         {error && (
           <div style={styles.errorBox}>
             ⚠️ {error}
           </div>
         )}
 
-        {/* Analyze button */}
         <button
           onClick={onSubmit}
           style={{
@@ -214,7 +325,6 @@ function UploadScreen({ file, error, onFileChange, onSubmit }) {
           🔍 Analyze Statement
         </button>
 
-        {/* Feature highlights */}
         <div style={styles.features}>
           <Feature icon="🧠" text="ML Fraud Detection" />
           <Feature icon="🔍" text="PDF Forensics" />
@@ -226,7 +336,6 @@ function UploadScreen({ file, error, onFileChange, onSubmit }) {
   )
 }
 
-// Small feature highlight component
 function Feature({ icon, text }) {
   return (
     <div style={styles.feature}>
@@ -237,7 +346,7 @@ function Feature({ icon, text }) {
 }
 
 // =============================================
-// LOADING SCREEN COMPONENT
+// LOADING SCREEN
 // =============================================
 
 function LoadingScreen() {
@@ -263,18 +372,16 @@ function LoadingScreen() {
 }
 
 // =============================================
-// RESULTS SCREEN COMPONENT
+// RESULTS SCREEN
 // =============================================
 
 function ResultsScreen({ results, onReset }) {
 
-  // Determine color based on risk score
   const scoreColor =
-    results.risk_score >= 70 ? "#ef4444" :  // red
-    results.risk_score >= 40 ? "#f59e0b" :  // yellow
-                               "#22c55e"    // green
+    results.risk_score >= 70 ? "#ef4444" :
+    results.risk_score >= 40 ? "#f59e0b" :
+                               "#22c55e"
 
-  // Verdict background color
   const verdictBg =
     results.verdict === "HIGH RISK"   ? "#450a0a" :
     results.verdict === "MEDIUM RISK" ? "#451a03" :
@@ -284,7 +391,6 @@ function ResultsScreen({ results, onReset }) {
     <main style={styles.main}>
       <div style={styles.resultsCard}>
 
-        {/* Title */}
         <h2 style={styles.resultsTitle}>
           Analysis Complete
         </h2>
@@ -292,7 +398,6 @@ function ResultsScreen({ results, onReset }) {
           📄 {results.filename}
         </p>
 
-        {/* Risk Score Circle */}
         <div style={styles.scoreContainer}>
           <div style={{
             ...styles.scoreCircle,
@@ -311,7 +416,6 @@ function ResultsScreen({ results, onReset }) {
           </div>
         </div>
 
-        {/* Verdict Badge */}
         <div style={{
           ...styles.verdictBadge,
           backgroundColor: verdictBg,
@@ -323,27 +427,13 @@ function ResultsScreen({ results, onReset }) {
           {" "}{results.verdict}
         </div>
 
-        {/* Stats Row */}
         <div style={styles.statsRow}>
-          <Stat
-            label="ML Score"
-            value={`${results.ml_score}/100`}
-          />
-          <Stat
-            label="Forensics"
-            value={`${results.forensics_score}/75`}
-          />
-          <Stat
-            label="Confidence"
-            value={`${results.confidence}%`}
-          />
-          <Stat
-            label="Transactions"
-            value={results.transactions_found}
-          />
+          <Stat label="ML Score"     value={`${results.ml_score}/100`} />
+          <Stat label="Forensics"    value={`${results.forensics_score}/75`} />
+          <Stat label="Confidence"   value={`${results.confidence}%`} />
+          <Stat label="Transactions" value={results.transactions_found} />
         </div>
 
-        {/* Fraud Flags */}
         {results.flags.length > 0 ? (
           <div style={styles.flagsSection}>
             <h3 style={styles.flagsTitle}>
@@ -361,18 +451,13 @@ function ResultsScreen({ results, onReset }) {
           </div>
         )}
 
-        {/* Fonts detected */}
         <div style={styles.fontsSection}>
           <p style={styles.fontsText}>
             Fonts detected: {results.fonts_detected.join(", ")}
           </p>
         </div>
 
-        {/* Analyze Another Button */}
-        <button
-          onClick={onReset}
-          style={styles.resetButton}
-        >
+        <button onClick={onReset} style={styles.resetButton}>
           🔄 Analyze Another Statement
         </button>
 
@@ -381,7 +466,6 @@ function ResultsScreen({ results, onReset }) {
   )
 }
 
-// Small stat component
 function Stat({ label, value }) {
   return (
     <div style={styles.stat}>
@@ -393,8 +477,6 @@ function Stat({ label, value }) {
 
 // =============================================
 // STYLES
-// All styles as JavaScript objects
-// Same as CSS but camelCase property names
 // =============================================
 
 const styles = {
@@ -416,6 +498,11 @@ const styles = {
     alignItems: "center",
     justifyContent: "space-between",
   },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "16px",
+  },
   logo: {
     fontSize: "22px",
     fontWeight: "700",
@@ -425,6 +512,15 @@ const styles = {
     fontSize: "13px",
     color: "#94a3b8",
   },
+  logoutButton: {
+    backgroundColor: "transparent",
+    border: "1px solid #334155",
+    color: "#94a3b8",
+    padding: "6px 14px",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "13px",
+  },
 
   // Main layout
   main: {
@@ -433,13 +529,67 @@ const styles = {
     padding: "0 20px",
   },
 
-  // Upload card
+  // Cards
   uploadCard: {
     backgroundColor: "#1e293b",
     borderRadius: "16px",
     padding: "40px",
     border: "1px solid #334155",
   },
+
+  // Login
+  loginIcon: {
+    fontSize: "48px",
+    textAlign: "center",
+    marginBottom: "16px",
+  },
+  inputGroup: {
+    marginBottom: "16px",
+  },
+  label: {
+    display: "block",
+    color: "#94a3b8",
+    fontSize: "13px",
+    marginBottom: "6px",
+    fontWeight: "600",
+  },
+  input: {
+    width: "100%",
+    padding: "12px 16px",
+    backgroundColor: "#0f172a",
+    border: "1px solid #334155",
+    borderRadius: "8px",
+    color: "#f1f5f9",
+    fontSize: "14px",
+    outline: "none",
+    boxSizing: "border-box",
+  },
+  demoCredentials: {
+    marginTop: "24px",
+    padding: "16px",
+    backgroundColor: "#0f172a",
+    borderRadius: "8px",
+    border: "1px solid #334155",
+    textAlign: "center",
+  },
+  demoTitle: {
+    color: "#64748b",
+    fontSize: "12px",
+    fontWeight: "600",
+    marginBottom: "8px",
+    textTransform: "uppercase",
+    letterSpacing: "1px",
+  },
+  demoText: {
+    color: "#64748b",
+    fontSize: "13px",
+    marginBottom: "4px",
+  },
+  demoValue: {
+    color: "#94a3b8",
+  },
+
+  // Title
   title: {
     fontSize: "26px",
     fontWeight: "700",
@@ -455,7 +605,7 @@ const styles = {
     lineHeight: "1.6",
   },
 
-  // Upload area
+  // Upload
   uploadArea: {
     border: "2px dashed #334155",
     borderRadius: "12px",
@@ -474,7 +624,7 @@ const styles = {
     fontSize: "14px",
   },
   fileInput: {
-    display: "none",  // Hidden — label triggers it
+    display: "none",
   },
   browseButton: {
     backgroundColor: "#3b82f6",
@@ -524,7 +674,7 @@ const styles = {
     fontSize: "14px",
   },
 
-  // Features row
+  // Features
   features: {
     display: "flex",
     justifyContent: "center",
@@ -595,8 +745,6 @@ const styles = {
     textAlign: "center",
     marginBottom: "32px",
   },
-
-  // Score circle
   scoreContainer: {
     display: "flex",
     justifyContent: "center",
@@ -623,8 +771,6 @@ const styles = {
     color: "#64748b",
     marginTop: "4px",
   },
-
-  // Verdict
   verdictBadge: {
     textAlign: "center",
     padding: "12px 24px",
@@ -635,8 +781,6 @@ const styles = {
     marginBottom: "24px",
     letterSpacing: "1px",
   },
-
-  // Stats
   statsRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -659,8 +803,6 @@ const styles = {
     color: "#64748b",
     marginTop: "4px",
   },
-
-  // Flags
   flagsSection: {
     backgroundColor: "#450a0a",
     border: "1px solid #7f1d1d",
@@ -690,8 +832,6 @@ const styles = {
     textAlign: "center",
     marginBottom: "16px",
   },
-
-  // Fonts
   fontsSection: {
     marginBottom: "8px",
   },
