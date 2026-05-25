@@ -47,16 +47,9 @@ export default function App() {
       return
     }
 
-    const fileSizeKB = selectedFile.size / 1024
-    if (fileSizeKB < 10) {
-      setError("File too small — please upload a real bank statement")
-      setFile(null)
-      return
-    }
-
-   
-    if (fileSizeKB < 1) {
-    setError("File too small — please upload a real bank statement")
+const fileSizeKB = selectedFile.size / 1024
+if (fileSizeKB > 10240) {
+    setError("File too large — maximum size is 10MB")
     setFile(null)
     return
 }
